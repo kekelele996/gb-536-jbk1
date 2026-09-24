@@ -93,3 +93,44 @@ func (repository *AnnotationSetRepository) Transition(id uint, from, to string) 
 	}
 	return nil
 }
+
+// FindOpenReplacement returns the in-flight revision already created from the
+// given annotation. A revision stays "open" while it has not reached a locked
+// or compared state; once locked the predecessor is marked superseded.
+func (repository *AnnotationSetRepository) FindOpenReplacement(predecessorID uint) (model.AnnotationSet, error) {
+	var annotation model.AnnotationSet
+	err := repository.db.Preload("Dataset").Preload("Schema").Preload("Annotator").
+		Where("supersedes_id = ? AND annotation_state IN ?", predecessorID, []string{"draft", "submitted", "returned"}).
+		Order("id ASC").First(&annotation).Error
+	if err != nil {
+		return annotation, fmt.Errorf("find open replacement: %w", err)
+	}
+	return annotation, nil
+}
+
+// SuccessorID returns the id of the revision that replaced the given
+// annotation, regardless of the revision state.
+func (repository *AnnotationSetRepository) SuccessorID(predecessorID uint) (*uint, error) {
+	var ids []uint
+	if err := repository.db.Model(&model.AnnotationSet{}).
+		Where("supersedes_id = ?", predecessorID).Order("id ASC").Pluck("id", &ids).Error; err != nil {
+		return nil, fmt.Errorf("find successor annotation: %w", err)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return &ids[0], nil
+}
+
+// VersionChain loads every annotation version for the same dataset, item and
+// annotator, ordered from oldest to newest.
+func (repository *AnnotationSetRepository) VersionChain(datasetID uint, itemKey string, annotatorID uint) ([]model.AnnotationSet, error) {
+	var annotations []model.AnnotationSet
+	err := repository.db.Preload("Dataset").Preload("Schema").Preload("Annotator").
+		Where("dataset_id = ? AND item_key = ? AND annotator_id = ?", datasetID, itemKey, annotatorID).
+		Order("id ASC").Find(&annotations).Error
+	if err != nil {
+		return nil, fmt.Errorf("load annotation version chain: %w", err)
+	}
+	return annotations, nil
+}

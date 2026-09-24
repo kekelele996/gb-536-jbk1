@@ -44,6 +44,7 @@ request "manager login" 200 POST "/auth/login" "" '{"username":"manager","passwo
 manager_token="$(jq -r '.data.token' <<<"$last_body")"
 request "annotator A login" 200 POST "/auth/login" "" '{"username":"annotator_a","password":"Annotate#536"}'
 annotator_a_token="$(jq -r '.data.token' <<<"$last_body")"
+annotator_a_id="$(jq -r '.data.user.id' <<<"$last_body")"
 request "annotator B login" 200 POST "/auth/login" "" '{"username":"annotator_b","password":"Compare#536"}'
 annotator_b_token="$(jq -r '.data.token' <<<"$last_body")"
 request "adjudicator login" 200 POST "/auth/login" "" '{"username":"adjudicator","password":"Decide#536"}'
@@ -145,6 +146,36 @@ self_compute="$(jq -nc --argjson dataset "$dataset_id" --arg item "$self_item" -
 request "compute self-isolation case" 201 POST "/adjudications" "$manager_token" "$self_compute" "qa-self-${run_suffix}"
 self_case_id="$(jq -r '.data.id' <<<"$last_body")"
 request "adjudicator cannot claim own annotation" 403 POST "/adjudications/$self_case_id/assign" "$admin_token" '{"note":"Self-adjudication must be denied."}'
+
+replace_payload="$(jq -nc '{reason:"Peer boundary omitted a trailing token and must be corrected."}')"
+request "non-owner cannot start replacement" 403 POST "/annotations/$peer_annotation_id/replace" "$annotator_b_token" "$replace_payload"
+request "owner starts tracked replacement draft" 201 POST "/annotations/$peer_annotation_id/replace" "$annotator_a_token" "$replace_payload"
+replacement_id="$(jq -r '.data.id' <<<"$last_body")"
+require_json ".data.annotation_state == \"draft\" and .data.supersedes_id == $peer_annotation_id and (.data.replacement_reason | length) > 0" "replacement draft linkage and reason"
+request "repeated replacement returns same draft" 201 POST "/annotations/$peer_annotation_id/replace" "$annotator_a_token" "$(jq -nc '{reason:"Duplicate request must be idempotent."}')"
+require_json ".data.id == $replacement_id" "replacement idempotency"
+request "old result exposes successor" 200 GET "/annotations/$peer_annotation_id" "$auditor_token"
+require_json ".data.current_version == false and .data.superseded_by_id == $replacement_id" "old result is retired and points to successor"
+request "draft result cannot be replaced again" 409 POST "/annotations/$replacement_id/replace" "$annotator_a_token" "$replace_payload"
+request "open case moved to pending recomputation" 200 GET "/adjudications/$self_case_id" "$auditor_token"
+require_json '.data.case_state == "pending_recompute" and .data.adjudicator_id == null' "pending recomputation case released its claim"
+request "retired old result cannot enter a new comparison" 409 POST "/adjudications" "$manager_token" "$self_compute" "qa-stale-${run_suffix}"
+corrected_labels="$(jq -nc --argjson labels "$right_labels" '$labels | map(if .unit_key == "u1" then .label="CLEAR" else . end)')"
+request "owner edits replacement draft" 200 PUT "/annotations/$replacement_id" "$annotator_a_token" "$(jq -nc --argjson labels "$corrected_labels" '{labels:$labels,quality_note:"Corrected boundary after replacement review."}')"
+request "submit replacement draft" 200 POST "/annotations/$replacement_id/transition" "$annotator_a_token" '{"target_state":"submitted"}'
+request "lock replacement draft" 200 POST "/annotations/$replacement_id/transition" "$manager_token" '{"target_state":"locked"}'
+require_json '.data.annotation_state == "locked"' "replacement locked"
+request "predecessor is superseded history" 200 GET "/annotations/$peer_annotation_id" "$auditor_token"
+require_json '.data.annotation_state == "superseded" and .data.current_version == false' "predecessor retired on lock"
+replacement_compute="$(jq -nc --argjson dataset "$dataset_id" --arg item "$self_item" --argjson left "$admin_annotation_id" --argjson right "$replacement_id" '{dataset_id:$dataset,item_key:$item,annotation_set_ids:[$left,$right],metric:"auto"}')"
+request "recompute with replacement revision" 201 POST "/adjudications" "$manager_token" "$replacement_compute" "qa-recompute-${run_suffix}"
+new_case_id="$(jq -r '.data.id' <<<"$last_body")"
+request "old open case is now superseded by new case" 200 GET "/adjudications/$self_case_id" "$auditor_token"
+require_json ".data.case_state == \"superseded\" and .data.superseded_by_case_id == $new_case_id" "superseded case links to recomputation"
+request "accepted case stays read-only after replacement" 200 GET "/adjudications/$case_id" "$auditor_token"
+require_json '.data.case_state == "accepted" and .data.superseded_by_case_id == null' "accepted history is never superseded"
+request "annotation version chain" 200 GET "/annotations/version-chain?dataset_id=$dataset_id&item_key=$self_item&annotator_id=$annotator_a_id" "$auditor_token"
+require_json '(.data.links | length) == 2 and .data.links[1].replacement_reason != null and .data.links[1].supersedes_id != null' "version chain shows replacement reason and predecessor"
 
 request "auditor reads redacted audit stream" 200 GET "/audit?page_size=200" "$auditor_token"
 require_json '([.data[].resource_type] | unique | length) >= 4 and ([.data[].action] | index("adjudication_case.accepted")) != null' "four entity projections and accepted action"

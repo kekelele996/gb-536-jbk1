@@ -74,6 +74,7 @@ type AdjudicationCaseResponse struct {
 	IdempotencyKey         string            `json:"idempotency_key"`
 	DecisionIdempotencyKey *string           `json:"decision_idempotency_key"`
 	ReopenCount            int               `json:"reopen_count"`
+	SupersededByCaseID     *uint             `json:"superseded_by_case_id"`
 	CreatedBy              uint              `json:"created_by"`
 	CreatedAt              time.Time         `json:"created_at"`
 	UpdatedAt              time.Time         `json:"updated_at"`

@@ -11,11 +11,13 @@ import (
 func registerAnnotationSetRoutes(group *gin.RouterGroup, target *handler.AnnotationSetHandler) {
 	routes := group.Group("/annotations")
 	routes.GET("", target.List)
+	routes.GET("/version-chain", target.VersionChain)
 	routes.GET("/:id", target.Get)
 	create := routes.Group("")
 	create.Use(middleware.RBAC(constants.RoleAnnotator, constants.RoleAdmin))
 	create.POST("", target.Create)
 	create.PUT("/:id", target.Update)
+	create.POST("/:id/replace", middleware.RateLimit(60, "annotation_submit"), target.Replace)
 	routes.POST("/:id/transition",
 		middleware.RBAC(constants.RoleAnnotator, constants.RoleDataManager, constants.RoleAdjudicator, constants.RoleAdmin),
 		middleware.RateLimit(60, "annotation_submit"), target.Transition)

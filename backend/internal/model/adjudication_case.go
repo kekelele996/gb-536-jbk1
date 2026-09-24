@@ -30,6 +30,7 @@ type AdjudicationCase struct {
 	IdempotencyKey         string        `gorm:"size:120;uniqueIndex;not null"`
 	DecisionIdempotencyKey *string       `gorm:"size:120;uniqueIndex"`
 	ReopenCount            int           `gorm:"not null;default:0"`
+	SupersededByCaseID     *uint         `gorm:"index"`
 	CreatedBy              uint          `gorm:"index;not null"`
 	CreatedAt              time.Time     `gorm:"not null"`
 	UpdatedAt              time.Time     `gorm:"not null"`

@@ -49,6 +49,13 @@ func (service *AdjudicationCaseService) Compute(request dto.ComputeAdjudicationR
 	if err != nil {
 		return dto.AdjudicationCaseResponse{}, false, err
 	}
+	for _, annotation := range annotations {
+		if _, successorErr := service.annotations.FindOpenReplacement(annotation.ID); successorErr == nil {
+			return dto.AdjudicationCaseResponse{}, false, Conflict("annotation_replaced", "an old result with an open replacement draft cannot enter a new comparison", repository.ErrStateConflict)
+		} else if !errors.Is(successorErr, gorm.ErrRecordNotFound) {
+			return dto.AdjudicationCaseResponse{}, false, Internal("could not verify replacement drafts", successorErr)
+		}
+	}
 	inputHash := adjudicationInputHash(annotations, request, service.algorithmVersion)
 	if existing, findErr := service.repository.FindByIdempotencyKey(idempotencyKey); findErr == nil {
 		if existing.InputHash != inputHash {
@@ -108,8 +115,12 @@ func (service *AdjudicationCaseService) Compute(request dto.ComputeAdjudicationR
 				}
 			}
 		}
+		supersededCaseIDs, supersedeErr := cases.SupersedePending(request.DatasetID, strings.TrimSpace(request.ItemKey), caseRecord.ID)
+		if supersedeErr != nil {
+			return Internal("could not retire pending recomputation cases", supersedeErr)
+		}
 		return service.system.RecordAuditTx(tx, actor, requestID, "adjudication_case.computed", "adjudication_case", auditID(caseRecord.ID),
-			map[string]any{"annotation_set_ids": sortedIDs(request.AnnotationSetIDs), "input_hash": inputHash},
+			map[string]any{"annotation_set_ids": sortedIDs(request.AnnotationSetIDs), "input_hash": inputHash, "superseded_case_ids": supersededCaseIDs},
 			nil, caseSummary(caseRecord))
 	})
 	if err != nil {
@@ -153,7 +164,7 @@ func (service *AdjudicationCaseService) Assign(id uint, request dto.AssignCaseRe
 		return dto.AdjudicationCaseResponse{}, MapRepositoryError("adjudication case", err)
 	}
 	if before.CaseState != constants.CaseOpen && before.CaseState != constants.CaseReopened {
-		return dto.AdjudicationCaseResponse{}, Conflict("invalid_case_transition", "only open or reopened cases can be assigned", repository.ErrStateConflict)
+		return dto.AdjudicationCaseResponse{}, Conflict("invalid_case_transition", "only open or reopened cases can be assigned; pending recomputation and historical cases are read-only", repository.ErrStateConflict)
 	}
 	ownsAnnotation, ownershipErr := ownsAnyAnnotation(service.annotations, before.AnnotationSetIDsJSON, actor.ID)
 	if ownershipErr != nil {
@@ -197,6 +208,9 @@ func (service *AdjudicationCaseService) Decide(id uint, request dto.AdjudicateCa
 			return response, true, nil
 		}
 		return dto.AdjudicationCaseResponse{}, false, Conflict("idempotency_conflict", "case was already adjudicated with a different Idempotency-Key", repository.ErrStateConflict)
+	}
+	if before.CaseState != constants.CaseAssigned {
+		return dto.AdjudicationCaseResponse{}, false, Conflict("case_not_assignable", "this case is waiting for recomputation or is historical and cannot be decided", repository.ErrStateConflict)
 	}
 	if before.AdjudicatorID == nil || *before.AdjudicatorID != actor.ID {
 		return dto.AdjudicationCaseResponse{}, false, Forbidden("only the assigned adjudicator can decide this case")
@@ -442,7 +456,8 @@ func adjudicationResponse(adjudication model.AdjudicationCase) dto.AdjudicationC
 		ReviewedBy: adjudication.ReviewedBy, DecidedAt: adjudication.DecidedAt, InputHash: adjudication.InputHash,
 		AlgorithmVersion: adjudication.AlgorithmVersion, IdempotencyKey: adjudication.IdempotencyKey,
 		DecisionIdempotencyKey: adjudication.DecisionIdempotencyKey, ReopenCount: adjudication.ReopenCount,
-		CreatedBy: adjudication.CreatedBy, CreatedAt: adjudication.CreatedAt, UpdatedAt: adjudication.UpdatedAt,
+		SupersededByCaseID: adjudication.SupersededByCaseID,
+		CreatedBy:          adjudication.CreatedBy, CreatedAt: adjudication.CreatedAt, UpdatedAt: adjudication.UpdatedAt,
 	}
 }
 

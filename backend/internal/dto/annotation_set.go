@@ -31,22 +31,50 @@ type AnnotationTransitionRequest struct {
 	Reason      string `json:"reason" validate:"max=300"`
 }
 
+type ReplaceAnnotationSetRequest struct {
+	Reason string `json:"reason" validate:"required,min=4,max=600"`
+}
+
+type AnnotationVersionLink struct {
+	ID                uint              `json:"id"`
+	AnnotationState   string            `json:"annotation_state"`
+	Labels            []AnnotationLabel `json:"labels"`
+	SourceChecksum    string            `json:"source_checksum"`
+	SupersedesID      *uint             `json:"supersedes_id"`
+	ReplacementReason string            `json:"replacement_reason"`
+	QualityNote       string            `json:"quality_note"`
+	SubmittedAt       *time.Time        `json:"submitted_at"`
+	CreatedAt         time.Time         `json:"created_at"`
+	UpdatedAt         time.Time         `json:"updated_at"`
+}
+
+type AnnotationVersionChainResponse struct {
+	DatasetID   uint                    `json:"dataset_id"`
+	ItemKey     string                  `json:"item_key"`
+	AnnotatorID uint                    `json:"annotator_id"`
+	Annotator   string                  `json:"annotator"`
+	Links       []AnnotationVersionLink `json:"links"`
+}
+
 type AnnotationSetResponse struct {
-	ID              uint              `json:"id"`
-	DatasetID       uint              `json:"dataset_id"`
-	DatasetCode     string            `json:"dataset_code"`
-	SchemaID        uint              `json:"schema_id"`
-	SchemaCode      string            `json:"schema_code"`
-	SchemaVersion   int               `json:"schema_version"`
-	AnnotatorID     uint              `json:"annotator_id"`
-	Annotator       string            `json:"annotator"`
-	ItemKey         string            `json:"item_key"`
-	Labels          []AnnotationLabel `json:"labels"`
-	SourceChecksum  string            `json:"source_checksum"`
-	AnnotationState string            `json:"annotation_state"`
-	SubmittedAt     *time.Time        `json:"submitted_at"`
-	SupersedesID    *uint             `json:"supersedes_id"`
-	QualityNote     string            `json:"quality_note"`
-	CreatedAt       time.Time         `json:"created_at"`
-	UpdatedAt       time.Time         `json:"updated_at"`
+	ID                uint              `json:"id"`
+	DatasetID         uint              `json:"dataset_id"`
+	DatasetCode       string            `json:"dataset_code"`
+	SchemaID          uint              `json:"schema_id"`
+	SchemaCode        string            `json:"schema_code"`
+	SchemaVersion     int               `json:"schema_version"`
+	AnnotatorID       uint              `json:"annotator_id"`
+	Annotator         string            `json:"annotator"`
+	ItemKey           string            `json:"item_key"`
+	Labels            []AnnotationLabel `json:"labels"`
+	SourceChecksum    string            `json:"source_checksum"`
+	AnnotationState   string            `json:"annotation_state"`
+	SubmittedAt       *time.Time        `json:"submitted_at"`
+	SupersedesID      *uint             `json:"supersedes_id"`
+	SupersededByID    *uint             `json:"superseded_by_id"`
+	ReplacementReason string            `json:"replacement_reason"`
+	QualityNote       string            `json:"quality_note"`
+	CurrentVersion    bool              `json:"current_version"`
+	CreatedAt         time.Time         `json:"created_at"`
+	UpdatedAt         time.Time         `json:"updated_at"`
 }

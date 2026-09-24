@@ -54,6 +54,7 @@ export interface AdjudicationCase {
   idempotency_key: string;
   decision_idempotency_key?: string;
   reopen_count: number;
+  superseded_by_case_id?: number;
   created_by: number;
   created_at: string;
   updated_at: string;

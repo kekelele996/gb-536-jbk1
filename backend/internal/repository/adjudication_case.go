@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -126,4 +127,91 @@ func (repository *AdjudicationCaseRepository) Review(id uint, from, to string, r
 		return ErrStateConflict
 	}
 	return nil
+}
+
+// ContainingAnnotationSet returns cases whose frozen annotation id list
+// references the given annotation. The id list is stored as a JSON array.
+func (repository *AdjudicationCaseRepository) ContainingAnnotationSet(annotationID uint) ([]model.AdjudicationCase, error) {
+	var cases []model.AdjudicationCase
+	pattern := fmt.Sprintf("%%%d%%", annotationID)
+	if err := repository.db.Preload("Dataset").
+		Where("annotation_set_ids_json LIKE ?", pattern).Find(&cases).Error; err != nil {
+		return nil, fmt.Errorf("find cases referencing annotation set: %w", err)
+	}
+	filtered := make([]model.AdjudicationCase, 0, len(cases))
+	for _, adjudication := range cases {
+		if jsonContainsID(adjudication.AnnotationSetIDsJSON, annotationID) {
+			filtered = append(filtered, adjudication)
+		}
+	}
+	return filtered, nil
+}
+
+// MarkPendingRecompute moves still-active cases that reference a replaced
+// annotation out of the live queue. Accepted cases and already superseded
+// cases are left untouched. Returns the number of affected rows.
+func (repository *AdjudicationCaseRepository) MarkPendingRecompute(annotationID uint, activeStates []string) (int64, error) {
+	candidates, err := repository.ContainingAnnotationSet(annotationID)
+	if err != nil {
+		return 0, err
+	}
+	ids := make([]uint, 0)
+	active := map[string]bool{}
+	for _, state := range activeStates {
+		active[state] = true
+	}
+	for _, adjudication := range candidates {
+		if active[adjudication.CaseState] {
+			ids = append(ids, adjudication.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	result := repository.db.Model(&model.AdjudicationCase{}).
+		Where("id IN ? AND case_state IN ?", ids, activeStates).
+		Updates(map[string]any{"case_state": "pending_recompute", "adjudicator_id": nil})
+	if result.Error != nil {
+		return 0, fmt.Errorf("mark cases pending recompute: %w", result.Error)
+	}
+	return result.RowsAffected, nil
+}
+
+// SupersedePending marks pending_recompute cases of the same dataset/item as
+// superseded by the freshly computed case. It also clears the decision so the
+// stale final labels cannot be mistaken for the current outcome, and returns
+// the ids of the cases that were superseded.
+func (repository *AdjudicationCaseRepository) SupersedePending(datasetID uint, itemKey string, newCaseID uint) ([]uint, error) {
+	var ids []uint
+	if err := repository.db.Model(&model.AdjudicationCase{}).
+		Where("dataset_id = ? AND item_key = ? AND case_state = ?", datasetID, itemKey, "pending_recompute").
+		Pluck("id", &ids).Error; err != nil {
+		return nil, fmt.Errorf("find pending recompute cases: %w", err)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	result := repository.db.Model(&model.AdjudicationCase{}).
+		Where("id IN ?", ids).
+		Updates(map[string]any{"case_state": "superseded", "superseded_by_case_id": newCaseID})
+	if result.Error != nil {
+		return nil, fmt.Errorf("supersede pending recompute cases: %w", result.Error)
+	}
+	if int(result.RowsAffected) != len(ids) {
+		return nil, ErrStateConflict
+	}
+	return ids, nil
+}
+
+func jsonContainsID(encoded string, target uint) bool {
+	var ids []uint
+	if err := json.Unmarshal([]byte(encoded), &ids); err != nil {
+		return false
+	}
+	for _, id := range ids {
+		if id == target {
+			return true
+		}
+	}
+	return false
 }

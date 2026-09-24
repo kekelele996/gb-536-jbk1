@@ -14,7 +14,7 @@ docker compose up -d --build
 
 - 创建、修订、冻结和归档 `CorpusDataset` 版本。
 - 草拟、校验、发布、废止和复制 `AnnotationSchema` 版本。
-- 创建、编辑、提交、退回、锁定、比较和替代本人拥有的 `AnnotationSet`。
+- 创建、编辑、提交、退回、锁定、比较和替代本人拥有的 `AnnotationSet`，并对锁定/已比较结果发起带原因、幂等、可追踪的替换草稿。
 - 计算 Cohen's Kappa 或名义尺度 Krippendorff's Alpha，同时展示观测一致率、机会一致率、样本量、标注员数量、缺失值数量和适用条件。
 - 对 span 标注识别边界、标签、遗漏和重叠分歧，保存标签混淆矩阵和稳定聚类键。
 - 认领、裁决、独立复核、接受或重开 `AdjudicationCase`，并对计算和裁决提交提供幂等保护。
@@ -100,6 +100,8 @@ docker compose up -d --build
 | `POST /api/v1/schemas/:id/transition` | 校验、发布或废止 | manager/admin |
 | `GET/POST /api/v1/annotations` | 查询或创建结果集 | 创建：annotator/admin |
 | `GET/PUT /api/v1/annotations/:id` | 详情或编辑本人草稿 | 更新：owner/admin |
+| `POST /api/v1/annotations/:id/replace` | 从锁定/已比较结果发起可追踪替换草稿 | owner/admin |
+| `GET /api/v1/annotations/version-chain` | 查看同一标注员和题目的版本链与替换原因 | 已认证用户 |
 | `POST /api/v1/annotations/:id/transition` | 提交、退回、锁定、比较、替代 | 按状态和角色控制 |
 | `GET/POST /api/v1/adjudications` | 查询裁决或计算一致性 | 计算：manager/admin，限流 |
 | `GET /api/v1/adjudications/:id` | 查询冻结的裁决证据 | 已认证用户 |
@@ -115,6 +117,10 @@ docker compose up -d --build
 ## 共享枚举位置
 
 `AnnotationState = draft | submitted | returned | locked | compared | superseded`
+
+`CaseState = open | assigned | adjudicated | reviewed | accepted | reopened | pending_recompute | superseded`
+
+替换流程（`POST /annotations/:id/replace`）从锁定或已比较的旧结果复制出同标注员、同数据集、同题目的新草稿（`supersedes_id` 指向旧结果并记录 `replacement_reason`）。发起即让旧结果退出新的比较与裁决：引用旧结果且尚未接受的案件转为 `pending_recompute` 并释放认领；已接受（`accepted`）案件保留为只读历史。同一旧结果重复发起只返回同一个在途草稿。新草稿提交并锁定后，旧结果转为 `superseded`；随后用新版本重新计算，会生成新案件并把 `pending_recompute` 旧案件置为 `superseded`（记录 `superseded_by_case_id`）。标注页通过版本链展示各版本状态和替换原因。
 
 | 层级 | 位置 |
 | --- | --- |

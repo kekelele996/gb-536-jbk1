@@ -24,7 +24,7 @@ export class AnnotationStateBadgeComponent {
   readonly label = computed(() => this.state().replaceAll('_', ' '));
   readonly tone = computed(() => {
     if (['accepted', 'published', 'frozen'].includes(this.state())) return 'state good';
-    if (['returned', 'open', 'reopened'].includes(this.state())) return 'state bad';
+    if (['returned', 'open', 'reopened', 'pending_recompute'].includes(this.state())) return 'state bad';
     if (['draft', 'assigned'].includes(this.state())) return 'state warn';
     if (['submitted', 'locked', 'compared', 'validated', 'adjudicated', 'reviewed'].includes(this.state())) return 'state info';
     return 'state neutral';
@@ -32,6 +32,7 @@ export class AnnotationStateBadgeComponent {
   readonly icon = computed(() => {
     if (['accepted', 'published', 'frozen'].includes(this.state())) return 'circle-check';
     if (['returned', 'reopened'].includes(this.state())) return 'triangle-alert';
+    if (['pending_recompute'].includes(this.state())) return 'rotate-ccw';
     if (['archived', 'deprecated', 'superseded'].includes(this.state())) return 'archive';
     if (['locked', 'reviewed'].includes(this.state())) return 'lock-keyhole';
     return 'circle-dot';

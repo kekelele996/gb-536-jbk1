@@ -54,7 +54,7 @@ func wire(db *gorm.DB, cfg config.Config) handlers {
 	systemService := service.NewSystemService(systemRepository, cfg.JWTSecret, cfg.JWTTTL)
 	datasetService := service.NewCorpusDatasetService(db, datasetRepository, systemService)
 	schemaService := service.NewAnnotationSchemaService(db, schemaRepository, datasetRepository, systemService)
-	annotationService := service.NewAnnotationSetService(db, annotationRepository, datasetRepository, schemaRepository, systemService)
+	annotationService := service.NewAnnotationSetService(db, annotationRepository, adjudicationRepository, datasetRepository, schemaRepository, systemService)
 	adjudicationService := service.NewAdjudicationCaseService(db, adjudicationRepository, annotationRepository, systemService, cfg.AlgorithmVersion)
 	return handlers{
 		system: handler.NewSystemHandler(systemService, db), datasets: handler.NewCorpusDatasetHandler(datasetService),

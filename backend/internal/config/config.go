@@ -84,6 +84,9 @@ func OpenDatabase(cfg Config) (*gorm.DB, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 	if cfg.DBAutoMigrate {
+		if err := dropLegacyIndexes(db); err != nil {
+			return nil, fmt.Errorf("drop legacy indexes: %w", err)
+		}
 		if err := db.AutoMigrate(
 			&model.User{}, &model.CorpusDataset{}, &model.AnnotationSchema{},
 			&model.AnnotationSet{}, &model.AdjudicationCase{}, &model.AuditEvent{},
@@ -95,6 +98,22 @@ func OpenDatabase(cfg Config) (*gorm.DB, error) {
 		return nil, fmt.Errorf("seed database: %w", err)
 	}
 	return db, nil
+}
+
+func dropLegacyIndexes(db *gorm.DB) error {
+	// The first revision made (dataset, schema, annotator, item, checksum)
+	// globally unique, which prevented a corrected draft from reusing the same
+	// annotator/item/checksum. The replacement flow relies on a non-unique
+	// identity index instead, so legacy unique indexes are removed before
+	// AutoMigrate reconciles the current model.
+	for _, indexName := range []string{"idx_annotation_revision", "idx_annotation_identity"} {
+		if db.Migrator().HasTable(&model.AnnotationSet{}) && db.Migrator().HasIndex(&model.AnnotationSet{}, indexName) {
+			if err := db.Migrator().DropIndex(&model.AnnotationSet{}, indexName); err != nil {
+				return fmt.Errorf("drop %s: %w", indexName, err)
+			}
+		}
+	}
+	return nil
 }
 
 func seed(db *gorm.DB, cfg Config) error {

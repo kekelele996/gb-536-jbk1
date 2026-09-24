@@ -16,13 +16,14 @@ import (
 type AnnotationSetService struct {
 	db         *gorm.DB
 	repository *repository.AnnotationSetRepository
+	cases      *repository.AdjudicationCaseRepository
 	datasets   *repository.CorpusDatasetRepository
 	schemas    *repository.AnnotationSchemaRepository
 	system     *SystemService
 }
 
-func NewAnnotationSetService(db *gorm.DB, repository *repository.AnnotationSetRepository, datasets *repository.CorpusDatasetRepository, schemas *repository.AnnotationSchemaRepository, system *SystemService) *AnnotationSetService {
-	return &AnnotationSetService{db: db, repository: repository, datasets: datasets, schemas: schemas, system: system}
+func NewAnnotationSetService(db *gorm.DB, repository *repository.AnnotationSetRepository, cases *repository.AdjudicationCaseRepository, datasets *repository.CorpusDatasetRepository, schemas *repository.AnnotationSchemaRepository, system *SystemService) *AnnotationSetService {
+	return &AnnotationSetService{db: db, repository: repository, cases: cases, datasets: datasets, schemas: schemas, system: system}
 }
 
 func (service *AnnotationSetService) Create(request dto.CreateAnnotationSetRequest, actor dto.Actor, requestID string) (dto.AnnotationSetResponse, error) {
@@ -64,20 +65,28 @@ func (service *AnnotationSetService) Create(request dto.CreateAnnotationSetReque
 			if previous.DatasetID != dataset.ID || previous.ItemKey != annotation.ItemKey {
 				return Unprocessable("invalid_supersedes", "superseded annotation must belong to the same dataset item", nil)
 			}
+			if _, successorErr := annotations.FindOpenReplacement(previous.ID); successorErr == nil {
+				return Conflict("replacement_in_progress", "a replacement draft already exists for the selected annotation", repository.ErrStateConflict)
+			} else if !errors.Is(successorErr, gorm.ErrRecordNotFound) {
+				return Internal("could not verify replacement drafts", successorErr)
+			}
+			annotation.ReplacementReason = "superseded by direct revision"
 		}
 		if createErr := annotations.Create(&annotation); createErr != nil {
 			if repository.IsUniqueViolation(createErr) {
-				return Conflict("duplicate_annotation_revision", "the same annotation payload already exists for this annotator", createErr)
+				return Conflict("duplicate_annotation_revision", "an open replacement draft already exists for this annotation", createErr)
 			}
 			return Internal("could not create annotation set", createErr)
 		}
 		if request.SupersedesID != nil {
-			if transitionErr := annotations.Transition(*request.SupersedesID, constants.AnnotationCompared, constants.AnnotationSuperseded); transitionErr != nil {
-				return Conflict("state_conflict", "superseded annotation changed concurrently", transitionErr)
+			affected, markErr := service.cases.WithDB(tx).MarkPendingRecompute(*request.SupersedesID, constants.CaseStatesThatCanBeRecomputed())
+			if markErr != nil {
+				return Internal("could not retract adjudications referencing the replaced annotation", markErr)
 			}
+			_ = affected
 		}
 		return service.system.RecordAuditTx(tx, actor, requestID, "annotation_set.created", "annotation_set", auditID(annotation.ID),
-			map[string]any{"dataset_id": annotation.DatasetID, "schema_id": annotation.SchemaID},
+			map[string]any{"dataset_id": annotation.DatasetID, "schema_id": annotation.SchemaID, "supersedes_id": annotation.SupersedesID},
 			nil, annotationSummary(annotation, len(labels)))
 	})
 	if err != nil {
@@ -91,7 +100,105 @@ func (service *AnnotationSetService) Get(id uint) (dto.AnnotationSetResponse, er
 	if err != nil {
 		return dto.AnnotationSetResponse{}, MapRepositoryError("annotation set", err)
 	}
-	return annotationResponse(annotation), nil
+	return service.responseWithSuccessor(annotation)
+}
+
+// Replace starts a tracked correction for a locked or compared result. It
+// creates a fresh draft for the same annotator, dataset and item, seeded from
+// the old result and pointing back to it. Repeating the request while a
+// replacement draft is still open returns that same draft. Any not-yet-accepted
+// adjudication referencing the old result is moved to pending_recompute;
+// accepted adjudications remain read-only history.
+func (service *AnnotationSetService) Replace(predecessorID uint, request dto.ReplaceAnnotationSetRequest, actor dto.Actor, requestID string) (dto.AnnotationSetResponse, error) {
+	reason := strings.TrimSpace(request.Reason)
+	previous, err := service.repository.Get(predecessorID)
+	if err != nil {
+		return dto.AnnotationSetResponse{}, MapRepositoryError("annotation set", err)
+	}
+	if previous.AnnotatorID != actor.ID && actor.Role != constants.RoleAdmin {
+		return dto.AnnotationSetResponse{}, Forbidden("only the owning annotator or an admin can start a replacement")
+	}
+	if previous.AnnotationState != constants.AnnotationLocked && previous.AnnotationState != constants.AnnotationCompared {
+		return dto.AnnotationSetResponse{}, Conflict("annotation_not_replaceable",
+			"only locked or compared results can be replaced", repository.ErrStateConflict)
+	}
+	// Idempotency: a repeated replace returns the in-flight revision unchanged.
+	if existing, findErr := service.repository.FindOpenReplacement(predecessorID); findErr == nil {
+		return service.responseWithSuccessor(existing)
+	} else if !errors.Is(findErr, gorm.ErrRecordNotFound) {
+		return dto.AnnotationSetResponse{}, Internal("could not verify an existing replacement draft", findErr)
+	}
+	labels := []dto.AnnotationLabel{}
+	if err := json.Unmarshal([]byte(previous.LabelsJSON), &labels); err != nil {
+		return dto.AnnotationSetResponse{}, Internal("predecessor labels could not be decoded", err)
+	}
+	revision := model.AnnotationSet{
+		DatasetID: previous.DatasetID, SchemaID: previous.SchemaID, AnnotatorID: previous.AnnotatorID,
+		ItemKey: previous.ItemKey, LabelsJSON: previous.LabelsJSON, SourceChecksum: previous.SourceChecksum,
+		AnnotationState: constants.AnnotationDraft, SupersedesID: &previous.ID,
+		ReplacementReason: reason, QualityNote: strings.TrimSpace(previous.QualityNote),
+	}
+	err = service.db.Transaction(func(tx *gorm.DB) error {
+		annotations := service.repository.WithDB(tx)
+		cases := service.cases.WithDB(tx)
+		if createErr := annotations.Create(&revision); createErr != nil {
+			if repository.IsUniqueViolation(createErr) {
+				return Conflict("replacement_in_progress", "a replacement draft already exists for the selected annotation", createErr)
+			}
+			return Internal("could not create replacement draft", createErr)
+		}
+		if _, markErr := cases.MarkPendingRecompute(previous.ID, constants.CaseStatesThatCanBeRecomputed()); markErr != nil {
+			return Internal("could not retract adjudications referencing the replaced annotation", markErr)
+		}
+		return service.system.RecordAuditTx(tx, actor, requestID, "annotation_set.replacement_started", "annotation_set", auditID(revision.ID),
+			map[string]any{"dataset_id": revision.DatasetID, "predecessor_id": previous.ID, "reason_present": reason != ""},
+			annotationSummary(previous, len(labels)), annotationSummary(revision, len(labels)))
+	})
+	if err != nil {
+		return dto.AnnotationSetResponse{}, err
+	}
+	return service.Get(revision.ID)
+}
+
+// VersionChain returns every revision of one annotator's result for one item,
+// oldest first, including superseded history and the recorded replacement
+// reasons.
+func (service *AnnotationSetService) VersionChain(datasetID uint, itemKey string, annotatorID uint) (dto.AnnotationVersionChainResponse, error) {
+	itemKey = strings.TrimSpace(itemKey)
+	if datasetID == 0 || itemKey == "" || annotatorID == 0 {
+		return dto.AnnotationVersionChainResponse{}, BadRequest("invalid_chain_query", "dataset_id, item_key and annotator_id are required")
+	}
+	chain, err := service.repository.VersionChain(datasetID, itemKey, annotatorID)
+	if err != nil {
+		return dto.AnnotationVersionChainResponse{}, Internal("could not load annotation version chain", err)
+	}
+	links := make([]dto.AnnotationVersionLink, 0, len(chain))
+	annotator := ""
+	for _, annotation := range chain {
+		annotator = annotation.Annotator.Username
+		labels := []dto.AnnotationLabel{}
+		_ = json.Unmarshal([]byte(annotation.LabelsJSON), &labels)
+		links = append(links, dto.AnnotationVersionLink{
+			ID: annotation.ID, AnnotationState: annotation.AnnotationState, Labels: labels,
+			SourceChecksum: annotation.SourceChecksum, SupersedesID: annotation.SupersedesID,
+			ReplacementReason: annotation.ReplacementReason, QualityNote: annotation.QualityNote,
+			SubmittedAt: annotation.SubmittedAt, CreatedAt: annotation.CreatedAt, UpdatedAt: annotation.UpdatedAt,
+		})
+	}
+	return dto.AnnotationVersionChainResponse{
+		DatasetID: datasetID, ItemKey: itemKey, AnnotatorID: annotatorID, Annotator: annotator, Links: links,
+	}, nil
+}
+
+func (service *AnnotationSetService) responseWithSuccessor(annotation model.AnnotationSet) (dto.AnnotationSetResponse, error) {
+	response := annotationResponse(annotation)
+	successorID, err := service.repository.SuccessorID(annotation.ID)
+	if err != nil {
+		return dto.AnnotationSetResponse{}, err
+	}
+	response.SupersededByID = successorID
+	response.CurrentVersion = successorID == nil && annotation.AnnotationState != constants.AnnotationSuperseded
+	return response, nil
 }
 
 func (service *AnnotationSetService) List(page, pageSize int, datasetID uint, itemKey, state string) ([]dto.AnnotationSetResponse, dto.PageMeta, error) {
@@ -101,7 +208,14 @@ func (service *AnnotationSetService) List(page, pageSize int, datasetID uint, it
 	}
 	responses := make([]dto.AnnotationSetResponse, 0, len(annotations))
 	for _, annotation := range annotations {
-		responses = append(responses, annotationResponse(annotation))
+		response := annotationResponse(annotation)
+		successorID, successorErr := service.repository.SuccessorID(annotation.ID)
+		if successorErr != nil {
+			return nil, dto.PageMeta{}, Internal("could not resolve annotation successors", successorErr)
+		}
+		response.SupersededByID = successorID
+		response.CurrentVersion = successorID == nil && annotation.AnnotationState != constants.AnnotationSuperseded
+		responses = append(responses, response)
 	}
 	return responses, PageMeta(page, pageSize, total), nil
 }
@@ -155,14 +269,31 @@ func (service *AnnotationSetService) Transition(id uint, request dto.AnnotationT
 		return dto.AnnotationSetResponse{}, err
 	}
 	err = service.db.Transaction(func(tx *gorm.DB) error {
-		if transitionErr := service.repository.WithDB(tx).Transition(id, before.AnnotationState, request.TargetState); transitionErr != nil {
+		annotations := service.repository.WithDB(tx)
+		if transitionErr := annotations.Transition(id, before.AnnotationState, request.TargetState); transitionErr != nil {
 			return Conflict("state_conflict", "annotation state changed concurrently", transitionErr)
 		}
 		after := before
 		after.AnnotationState = request.TargetState
+		summary := map[string]any{"reason_present": strings.TrimSpace(request.Reason) != ""}
+		// When a replacement revision is locked it officially takes over from
+		// the predecessor. The old result becomes read-only history and can no
+		// longer participate in comparisons or adjudications.
+		if request.TargetState == constants.AnnotationLocked && before.SupersedesID != nil {
+			predecessor, loadErr := annotations.Get(*before.SupersedesID)
+			if loadErr != nil {
+				return Internal("could not load superseded annotation", loadErr)
+			}
+			if predecessor.AnnotationState != constants.AnnotationSuperseded {
+				expected := predecessor.AnnotationState
+				if transitionErr := annotations.Transition(predecessor.ID, expected, constants.AnnotationSuperseded); transitionErr != nil {
+					return Conflict("state_conflict", "predecessor annotation changed concurrently", transitionErr)
+				}
+			}
+			summary["superseded_predecessor_id"] = *before.SupersedesID
+		}
 		return service.system.RecordAuditTx(tx, actor, requestID, "annotation_set."+request.TargetState, "annotation_set", auditID(id),
-			map[string]any{"reason_present": strings.TrimSpace(request.Reason) != ""},
-			annotationSummary(before, labelCount(before.LabelsJSON)), annotationSummary(after, labelCount(before.LabelsJSON)))
+			summary, annotationSummary(before, labelCount(before.LabelsJSON)), annotationSummary(after, labelCount(before.LabelsJSON)))
 	})
 	if err != nil {
 		return dto.AnnotationSetResponse{}, err
@@ -226,7 +357,8 @@ func annotationResponse(annotation model.AnnotationSet) dto.AnnotationSetRespons
 		SchemaID: annotation.SchemaID, SchemaCode: annotation.Schema.SchemaCode, SchemaVersion: annotation.Schema.Version,
 		AnnotatorID: annotation.AnnotatorID, Annotator: annotation.Annotator.Username, ItemKey: annotation.ItemKey,
 		Labels: labels, SourceChecksum: annotation.SourceChecksum, AnnotationState: annotation.AnnotationState,
-		SubmittedAt: annotation.SubmittedAt, SupersedesID: annotation.SupersedesID, QualityNote: annotation.QualityNote,
+		SubmittedAt: annotation.SubmittedAt, SupersedesID: annotation.SupersedesID,
+		ReplacementReason: annotation.ReplacementReason, QualityNote: annotation.QualityNote,
 		CreatedAt: annotation.CreatedAt, UpdatedAt: annotation.UpdatedAt,
 	}
 }

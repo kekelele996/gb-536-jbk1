@@ -23,12 +23,14 @@ const (
 	AnnotationCompared   = "compared"
 	AnnotationSuperseded = "superseded"
 
-	CaseOpen        = "open"
-	CaseAssigned    = "assigned"
-	CaseAdjudicated = "adjudicated"
-	CaseReviewed    = "reviewed"
-	CaseAccepted    = "accepted"
-	CaseReopened    = "reopened"
+	CaseOpen             = "open"
+	CaseAssigned         = "assigned"
+	CaseAdjudicated      = "adjudicated"
+	CaseReviewed         = "reviewed"
+	CaseAccepted         = "accepted"
+	CaseReopened         = "reopened"
+	CasePendingRecompute = "pending_recompute"
+	CaseSuperseded       = "superseded"
 )
 
 func ValidRole(value string) bool {
@@ -71,13 +73,28 @@ func CanTransitionAnnotation(from, to string) bool {
 	return allowed[from][to]
 }
 
+// CaseStatesThatCanBeRecomputed lists cases whose evidence may still drive the
+// current decision. When an input annotation is replaced these cases must leave
+// the active queue and wait for a fresh comparison. Accepted cases are locked
+// history and are deliberately excluded.
+func CaseStatesThatCanBeRecomputed() []string {
+	return []string{CaseOpen, CaseAssigned, CaseAdjudicated, CaseReviewed, CaseReopened}
+}
+
+// CaseIsTerminalHistory reports states that can no longer drive a decision and
+// exist only for inspection.
+func CaseIsTerminalHistory(value string) bool {
+	return value == CaseAccepted || value == CaseSuperseded
+}
+
 func CanTransitionCase(from, to string) bool {
 	allowed := map[string]map[string]bool{
-		CaseOpen:        {CaseAssigned: true},
-		CaseReopened:    {CaseAssigned: true},
-		CaseAssigned:    {CaseAdjudicated: true},
-		CaseAdjudicated: {CaseReviewed: true},
-		CaseReviewed:    {CaseAccepted: true, CaseReopened: true},
+		CaseOpen:             {CaseAssigned: true},
+		CaseReopened:         {CaseAssigned: true},
+		CaseAssigned:         {CaseAdjudicated: true},
+		CaseAdjudicated:      {CaseReviewed: true},
+		CaseReviewed:         {CaseAccepted: true, CaseReopened: true},
+		CasePendingRecompute: {CaseSuperseded: true},
 	}
 	return allowed[from][to]
 }
