@@ -127,3 +127,51 @@ func (repository *AdjudicationCaseRepository) Review(id uint, from, to string, r
 	}
 	return nil
 }
+
+// CasesForItem returns every adjudication case for a dataset item, ordered
+// oldest first. Callers decode the frozen annotation id snapshot to decide
+// which cases reference a replaced annotation set.
+func (repository *AdjudicationCaseRepository) CasesForItem(datasetID uint, itemKey string) ([]model.AdjudicationCase, error) {
+	var cases []model.AdjudicationCase
+	if err := repository.db.Preload("Dataset").
+		Where("dataset_id = ? AND item_key = ?", datasetID, itemKey).
+		Order("id ASC").Find(&cases).Error; err != nil {
+		return nil, fmt.Errorf("list adjudication cases for item: %w", err)
+	}
+	return cases, nil
+}
+
+// MarkPendingRecompute moves one still-active case to pending_recompute with a
+// conditional update and records the stale annotation set id on the case.
+func (repository *AdjudicationCaseRepository) MarkPendingRecompute(id uint, supersededIDsJSON string) error {
+	result := repository.db.Model(&model.AdjudicationCase{}).
+		Where("id = ? AND case_state IN ?", id, []string{"open", "assigned", "adjudicated", "reviewed", "reopened"}).
+		Updates(map[string]any{
+			"case_state":              "pending_recompute",
+			"superseded_set_ids_json": supersededIDsJSON,
+			"adjudicator_id":          nil,
+		})
+	if result.Error != nil {
+		return fmt.Errorf("mark case pending recompute: %w", result.Error)
+	}
+	if result.RowsAffected != 1 {
+		return ErrStateConflict
+	}
+	return nil
+}
+
+// RecordStaleAcceptedHistory appends the replaced annotation set id to an
+// accepted case without changing its state, so the frozen decision stays
+// view-only but visibly tied to a superseded evidence version.
+func (repository *AdjudicationCaseRepository) RecordStaleAcceptedHistory(id uint, supersededIDsJSON string) error {
+	result := repository.db.Model(&model.AdjudicationCase{}).
+		Where("id = ? AND case_state = ?", id, "accepted").
+		Update("superseded_set_ids_json", supersededIDsJSON)
+	if result.Error != nil {
+		return fmt.Errorf("record stale accepted history: %w", result.Error)
+	}
+	if result.RowsAffected > 1 {
+		return fmt.Errorf("record stale accepted history: %d rows updated", result.RowsAffected)
+	}
+	return nil
+}

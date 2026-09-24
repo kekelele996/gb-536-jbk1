@@ -58,12 +58,14 @@ type AdjudicationCaseResponse struct {
 	DatasetCode            string            `json:"dataset_code"`
 	ItemKey                string            `json:"item_key"`
 	AnnotationSetIDs       []uint            `json:"annotation_set_ids"`
+	SupersededSetIDs       []uint            `json:"superseded_set_ids"`
 	Agreement              AgreementDetails  `json:"agreement"`
 	DisagreementType       string            `json:"disagreement_type"`
 	ConfusionSnapshot      []ConfusionCell   `json:"confusion_snapshot"`
 	EvidenceSnapshot       []DiffEvidence    `json:"evidence_snapshot"`
 	ClusterKey             string            `json:"cluster_key"`
 	CaseState              string            `json:"case_state"`
+	EvidenceCurrent        bool              `json:"evidence_current"`
 	FinalLabels            []AnnotationLabel `json:"final_labels"`
 	Rationale              string            `json:"rationale"`
 	AdjudicatorID          *uint             `json:"adjudicator_id"`

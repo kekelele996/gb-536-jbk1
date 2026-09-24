@@ -16,6 +16,7 @@ func registerAnnotationSetRoutes(group *gin.RouterGroup, target *handler.Annotat
 	create.Use(middleware.RBAC(constants.RoleAnnotator, constants.RoleAdmin))
 	create.POST("", target.Create)
 	create.PUT("/:id", target.Update)
+	create.POST("/:id/replace", middleware.RateLimit(60, "annotation_replace"), target.Replace)
 	routes.POST("/:id/transition",
 		middleware.RBAC(constants.RoleAnnotator, constants.RoleDataManager, constants.RoleAdjudicator, constants.RoleAdmin),
 		middleware.RateLimit(60, "annotation_submit"), target.Transition)

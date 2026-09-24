@@ -7,6 +7,17 @@ export interface AnnotationLabel {
   end?: number;
 }
 
+export interface AnnotationVersionChainItem {
+  id: number;
+  annotation_state: AnnotationState;
+  supersedes_id?: number;
+  replace_reason: string;
+  quality_note: string;
+  submitted_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface AnnotationSet {
   id: number;
   dataset_id: number;
@@ -22,9 +33,12 @@ export interface AnnotationSet {
   annotation_state: AnnotationState;
   submitted_at?: string;
   supersedes_id?: number;
+  replace_reason?: string;
   quality_note: string;
+  version_chain?: AnnotationVersionChainItem[];
   created_at: string;
   updated_at: string;
+  reused?: boolean;
 }
 
 export interface CreateAnnotationSet {
@@ -34,7 +48,6 @@ export interface CreateAnnotationSet {
   labels: AnnotationLabel[];
   source_checksum: string;
   quality_note: string;
-  supersedes_id?: number;
 }
 
 export interface UpdateAnnotationSet {

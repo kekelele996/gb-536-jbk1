@@ -14,10 +14,10 @@ docker compose up -d --build
 
 - 创建、修订、冻结和归档 `CorpusDataset` 版本。
 - 草拟、校验、发布、废止和复制 `AnnotationSchema` 版本。
-- 创建、编辑、提交、退回、锁定、比较和替代本人拥有的 `AnnotationSet`。
+- 创建、编辑、提交、退回、锁定、比较和替代本人拥有的 `AnnotationSet`；锁定或比较后的结果可发起可追踪替换，旧版本退出比较与裁决并生成同标注员同题目的新草稿。
 - 计算 Cohen's Kappa 或名义尺度 Krippendorff's Alpha，同时展示观测一致率、机会一致率、样本量、标注员数量、缺失值数量和适用条件。
 - 对 span 标注识别边界、标签、遗漏和重叠分歧，保存标签混淆矩阵和稳定聚类键。
-- 认领、裁决、独立复核、接受或重开 `AdjudicationCase`，并对计算和裁决提交提供幂等保护。
+- 认领、裁决、独立复核、接受或重开 `AdjudicationCase`，并对计算和裁决提交提供幂等保护；引用旧标注结果的未接受裁决在替换时转为 `pending_recompute`，已接受历史保留查看但不再充当当前版本。
 - 按操作者、request ID、实体和动作检索四实体的脱敏审计投影。
 
 ## 角色账号
@@ -99,11 +99,12 @@ docker compose up -d --build
 | `POST /api/v1/schemas/:id/copy` | 复制新版本 | manager/admin |
 | `POST /api/v1/schemas/:id/transition` | 校验、发布或废止 | manager/admin |
 | `GET/POST /api/v1/annotations` | 查询或创建结果集 | 创建：annotator/admin |
-| `GET/PUT /api/v1/annotations/:id` | 详情或编辑本人草稿 | 更新：owner/admin |
-| `POST /api/v1/annotations/:id/transition` | 提交、退回、锁定、比较、替代 | 按状态和角色控制 |
+| `GET/PUT /api/v1/annotations/:id` | 详情（含版本链）或编辑本人草稿 | 更新：owner/admin |
+| `POST /api/v1/annotations/:id/replace` | 从锁定/比较结果发起可追踪替换，返回新草稿，重复发起返回同一草稿 | owner/admin |
+| `POST /api/v1/annotations/:id/transition` | 提交、退回、锁定、比较 | 按状态和角色控制 |
 | `GET/POST /api/v1/adjudications` | 查询裁决或计算一致性 | 计算：manager/admin，限流 |
-| `GET /api/v1/adjudications/:id` | 查询冻结的裁决证据 | 已认证用户 |
-| `POST /api/v1/adjudications/:id/assign` | 认领开放或重开案件 | adjudicator/admin |
+| `GET /api/v1/adjudications/:id` | 查询冻结的裁决证据（含证据是否仍为当前版本） | 已认证用户 |
+| `POST /api/v1/adjudications/:id/assign` | 认领开放或重开案件（`pending_recompute` 不可认领） | adjudicator/admin |
 | `POST /api/v1/adjudications/:id/decide` | 提交最终结构化标签 | 已指派 adjudicator/admin |
 | `POST /api/v1/adjudications/:id/review` | 独立复核 | adjudicator/admin |
 | `POST /api/v1/adjudications/:id/accept` | 接受已复核裁决 | 仅记录在案的独立 reviewer |
@@ -114,7 +115,14 @@ docker compose up -d --build
 
 ## 共享枚举位置
 
-`AnnotationState = draft | submitted | returned | locked | compared | superseded`
+`AnnotationState = draft | submitted | returned | locked | compared | superseded`，裁决另有 `pending_recompute` 状态。
+
+锁定（`locked`）或比较后（`compared`）的结果不能被直接改写；标注员对本人结果调用 `POST /api/v1/annotations/:id/replace` 并提供替换原因后：
+
+1. 旧结果在同一事务中转为 `superseded`，从后续比较中排除（再参与比较返回 409 `annotation_superseded`）。
+2. 生成同一数据集、规范、标注员和题目的新草稿，`supersedes_id` 唯一指向旧结果，并复制其标签作为修订起点；同一旧结果重复发起只返回同一草稿（`reused=true`）。
+3. 引用旧结果、尚未接受的裁决案件转为 `pending_recompute`，释放认领并等待按新版本重新计算；已接受案件保持 `accepted`，仅记录 `superseded_set_ids` 供查看，不能再被操作，也不再充当当前版本。
+4. 新草稿提交并锁定后接替旧版本；新比较使用新版本 id，案件响应的 `evidence_current` 标识冻结证据是否仍对应当前版本。标注页展示完整版本链与每一步替换原因。
 
 | 层级 | 位置 |
 | --- | --- |

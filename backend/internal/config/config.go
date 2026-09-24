@@ -22,6 +22,7 @@ import (
 	"corpus-annotation-agreement-control/backend/internal/dto"
 	"corpus-annotation-agreement-control/backend/internal/matching"
 	"corpus-annotation-agreement-control/backend/internal/model"
+	"corpus-annotation-agreement-control/backend/internal/repository"
 )
 
 type Config struct {
@@ -89,6 +90,10 @@ func OpenDatabase(cfg Config) (*gorm.DB, error) {
 			&model.AnnotationSet{}, &model.AdjudicationCase{}, &model.AuditEvent{},
 		); err != nil {
 			return nil, fmt.Errorf("migrate database: %w", err)
+		}
+		annotationRepository := repository.NewAnnotationSetRepository(db)
+		if err := annotationRepository.PrepareRevisionIndexes(); err != nil {
+			return nil, fmt.Errorf("prepare annotation revision indexes: %w", err)
 		}
 	}
 	if err := seed(db, cfg); err != nil {

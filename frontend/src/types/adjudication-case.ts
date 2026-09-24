@@ -38,12 +38,14 @@ export interface AdjudicationCase {
   dataset_code: string;
   item_key: string;
   annotation_set_ids: number[];
+  superseded_set_ids: number[];
   agreement: AgreementDetails;
   disagreement_type: DisagreementType;
   confusion_snapshot: ConfusionCell[];
   evidence_snapshot: DiffEvidence[];
   cluster_key: string;
   case_state: CaseState;
+  evidence_current: boolean;
   final_labels: AnnotationLabel[];
   rationale: string;
   adjudicator_id?: number;

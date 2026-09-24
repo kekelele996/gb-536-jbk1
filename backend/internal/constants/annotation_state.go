@@ -23,12 +23,13 @@ const (
 	AnnotationCompared   = "compared"
 	AnnotationSuperseded = "superseded"
 
-	CaseOpen        = "open"
-	CaseAssigned    = "assigned"
-	CaseAdjudicated = "adjudicated"
-	CaseReviewed    = "reviewed"
-	CaseAccepted    = "accepted"
-	CaseReopened    = "reopened"
+	CaseOpen             = "open"
+	CaseAssigned         = "assigned"
+	CaseAdjudicated      = "adjudicated"
+	CaseReviewed         = "reviewed"
+	CaseAccepted         = "accepted"
+	CaseReopened         = "reopened"
+	CasePendingRecompute = "pending_recompute"
 )
 
 func ValidRole(value string) bool {
@@ -66,9 +67,15 @@ func CanTransitionAnnotation(from, to string) bool {
 		AnnotationSubmitted: {AnnotationLocked: true, AnnotationReturned: true},
 		AnnotationReturned:  {AnnotationDraft: true},
 		AnnotationLocked:    {AnnotationCompared: true},
-		AnnotationCompared:  {AnnotationSuperseded: true},
 	}
 	return allowed[from][to]
+}
+
+// Compared and locked results leave the regular lifecycle only through the
+// audited replacement flow, which jumps directly to "superseded" while a new
+// draft inherits the annotator and item.
+func CanReplaceAnnotation(from string) bool {
+	return from == AnnotationLocked || from == AnnotationCompared
 }
 
 func CanTransitionCase(from, to string) bool {
@@ -80,4 +87,16 @@ func CanTransitionCase(from, to string) bool {
 		CaseReviewed:    {CaseAccepted: true, CaseReopened: true},
 	}
 	return allowed[from][to]
+}
+
+// ActiveCaseStates are the adjudication states that may still be worked on.
+// Accepted history is read-only and pending_recompute waits for a fresh
+// comparison against the replacement annotation version.
+func CaseIsActive(state string) bool {
+	switch state {
+	case CaseOpen, CaseAssigned, CaseAdjudicated, CaseReviewed, CaseReopened:
+		return true
+	default:
+		return false
+	}
 }

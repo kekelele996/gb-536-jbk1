@@ -92,3 +92,22 @@ func (handler *AnnotationSetHandler) Transition(context *gin.Context) {
 	}
 	WriteData(context, http.StatusOK, item)
 }
+
+func (handler *AnnotationSetHandler) Replace(context *gin.Context) {
+	id, err := PathID(context)
+	if err != nil {
+		WriteError(context, err)
+		return
+	}
+	var request dto.ReplaceAnnotationSetRequest
+	if err := BindAndValidate(context, &request); err != nil {
+		WriteError(context, err)
+		return
+	}
+	item, err := handler.service.Replace(id, request, Actor(context), RequestID(context))
+	if err != nil {
+		WriteError(context, err)
+		return
+	}
+	WriteData(context, http.StatusCreated, item)
+}

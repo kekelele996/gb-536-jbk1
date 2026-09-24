@@ -23,6 +23,10 @@ export class AnnotationSetApi {
     return this.api.put<AnnotationSet>(`/annotations/${id}`, payload);
   }
 
+  replace(id: number, reason: string) {
+    return this.api.post<AnnotationSet>(`/annotations/${id}/replace`, { reason });
+  }
+
   transition(id: number, targetState: AnnotationState, reason = '') {
     return this.api.post<AnnotationSet>(`/annotations/${id}/transition`, { target_state: targetState, reason });
   }

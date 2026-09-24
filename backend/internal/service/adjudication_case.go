@@ -153,6 +153,9 @@ func (service *AdjudicationCaseService) Assign(id uint, request dto.AssignCaseRe
 		return dto.AdjudicationCaseResponse{}, MapRepositoryError("adjudication case", err)
 	}
 	if before.CaseState != constants.CaseOpen && before.CaseState != constants.CaseReopened {
+		if before.CaseState == constants.CasePendingRecompute {
+			return dto.AdjudicationCaseResponse{}, Conflict("case_pending_recompute", "this case waits for a fresh comparison against replacement annotations and cannot be claimed", repository.ErrStateConflict)
+		}
 		return dto.AdjudicationCaseResponse{}, Conflict("invalid_case_transition", "only open or reopened cases can be assigned", repository.ErrStateConflict)
 	}
 	ownsAnnotation, ownershipErr := ownsAnyAnnotation(service.annotations, before.AnnotationSetIDsJSON, actor.ID)
@@ -189,6 +192,9 @@ func (service *AdjudicationCaseService) Decide(id uint, request dto.AdjudicateCa
 	before, err := service.repository.Get(id)
 	if err != nil {
 		return dto.AdjudicationCaseResponse{}, false, MapRepositoryError("adjudication case", err)
+	}
+	if before.CaseState == constants.CasePendingRecompute {
+		return dto.AdjudicationCaseResponse{}, false, Conflict("case_pending_recompute", "this case waits for recomputation after an annotation was replaced", repository.ErrStateConflict)
 	}
 	if before.DecisionIdempotencyKey != nil {
 		if *before.DecisionIdempotencyKey == idempotencyKey {
@@ -281,6 +287,9 @@ func (service *AdjudicationCaseService) Reopen(id uint, request dto.CaseReviewRe
 }
 
 func (service *AdjudicationCaseService) caseTransition(before model.AdjudicationCase, target, note string, actor dto.Actor, requestID string) (dto.AdjudicationCaseResponse, error) {
+	if before.CaseState == constants.CasePendingRecompute {
+		return dto.AdjudicationCaseResponse{}, Conflict("case_pending_recompute", "this case waits for a fresh comparison after an annotation replacement", repository.ErrStateConflict)
+	}
 	if !constants.CanTransitionCase(before.CaseState, target) {
 		return dto.AdjudicationCaseResponse{}, Conflict("invalid_case_transition",
 			"case transition is not allowed from "+before.CaseState+" to "+target, repository.ErrStateConflict)
@@ -321,6 +330,9 @@ func validateComparableAnnotations(annotations []model.AnnotationSet, request dt
 			schema = annotation.Schema
 		} else if annotation.SchemaID != schema.ID {
 			return nil, nil, model.AnnotationSchema{}, Unprocessable("incompatible_schema", "all annotation sets must use the same schema version", nil)
+		}
+		if annotation.AnnotationState == constants.AnnotationSuperseded {
+			return nil, nil, model.AnnotationSchema{}, Conflict("annotation_superseded", "superseded annotations cannot enter new comparisons; use the replacement revision", repository.ErrStateConflict)
 		}
 		if annotation.AnnotationState != constants.AnnotationLocked && annotation.AnnotationState != constants.AnnotationCompared {
 			return nil, nil, model.AnnotationSchema{}, Conflict("annotation_not_locked", "annotation sets must be locked before comparison", repository.ErrStateConflict)
@@ -423,13 +435,17 @@ func adjudicationResponse(adjudication model.AdjudicationCase) dto.AdjudicationC
 	confusion := []dto.ConfusionCell{}
 	evidence := []dto.DiffEvidence{}
 	finalLabels := []dto.AnnotationLabel{}
+	supersededIDs := []uint{}
 	_ = json.Unmarshal([]byte(adjudication.AnnotationSetIDsJSON), &ids)
 	_ = json.Unmarshal([]byte(adjudication.ConfusionSnapshotJSON), &confusion)
 	_ = json.Unmarshal([]byte(adjudication.EvidenceSnapshotJSON), &evidence)
 	_ = json.Unmarshal([]byte(adjudication.FinalLabelsJSON), &finalLabels)
+	if adjudication.SupersededSetIDsJSON != "" {
+		_ = json.Unmarshal([]byte(adjudication.SupersededSetIDsJSON), &supersededIDs)
+	}
 	return dto.AdjudicationCaseResponse{
 		ID: adjudication.ID, DatasetID: adjudication.DatasetID, DatasetCode: adjudication.Dataset.DatasetCode,
-		ItemKey: adjudication.ItemKey, AnnotationSetIDs: ids,
+		ItemKey: adjudication.ItemKey, AnnotationSetIDs: ids, SupersededSetIDs: supersededIDs,
 		Agreement: dto.AgreementDetails{
 			Metric: adjudication.AgreementMetric, Score: adjudication.AgreementScore,
 			ObservedAgreement: adjudication.ObservedAgreement, ChanceAgreement: adjudication.ChanceAgreement,
@@ -438,7 +454,8 @@ func adjudicationResponse(adjudication model.AdjudicationCase) dto.AdjudicationC
 		},
 		DisagreementType: adjudication.DisagreementType, ConfusionSnapshot: confusion,
 		EvidenceSnapshot: evidence, ClusterKey: adjudication.ClusterKey, CaseState: adjudication.CaseState,
-		FinalLabels: finalLabels, Rationale: adjudication.Rationale, AdjudicatorID: adjudication.AdjudicatorID,
+		EvidenceCurrent: len(supersededIDs) == 0 && adjudication.CaseState != constants.CasePendingRecompute,
+		FinalLabels:     finalLabels, Rationale: adjudication.Rationale, AdjudicatorID: adjudication.AdjudicatorID,
 		ReviewedBy: adjudication.ReviewedBy, DecidedAt: adjudication.DecidedAt, InputHash: adjudication.InputHash,
 		AlgorithmVersion: adjudication.AlgorithmVersion, IdempotencyKey: adjudication.IdempotencyKey,
 		DecisionIdempotencyKey: adjudication.DecisionIdempotencyKey, ReopenCount: adjudication.ReopenCount,

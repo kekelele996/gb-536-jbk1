@@ -36,12 +36,26 @@ import { AnnotationLabel, AnnotationSet } from '../types/annotation-set';
           </button>
         } @empty { <p class="empty">No annotation sets match the filter</p> }
         @if (annotations.selected(); as annotation) {
-          <section class="selected-actions"><span>Selected #{{ annotation.id }} / {{ annotation.updated_at | date:'short' }}</span><div>@if (canEdit(annotation)) { <button mat-stroked-button type="button" (click)="openEdit(annotation)" [disabled]="annotations.loading()">Edit draft</button><button mat-flat-button color="primary" type="button" (click)="annotations.transition(annotation, 'submitted')" [disabled]="annotations.loading()">Submit</button> } @if (owns(annotation) && annotation.annotation_state === 'returned') { <button mat-flat-button color="primary" type="button" (click)="annotations.transition(annotation, 'draft')" [disabled]="annotations.loading()">Resume draft</button> } @if (canManage() && annotation.annotation_state === 'submitted') { <button mat-stroked-button type="button" (click)="annotations.transition(annotation, 'returned', 'Needs correction against the published schema.')" [disabled]="annotations.loading()">Return</button><button mat-flat-button color="primary" type="button" (click)="annotations.transition(annotation, 'locked')" [disabled]="annotations.loading()">Lock</button> }</div></section>
+          <section class="selected-actions"><span>Selected #{{ annotation.id }} / {{ annotation.updated_at | date:'short' }}</span><div>@if (canEdit(annotation)) { <button mat-stroked-button type="button" (click)="openEdit(annotation)" [disabled]="annotations.loading()">Edit draft</button><button mat-flat-button color="primary" type="button" (click)="annotations.transition(annotation, 'submitted')" [disabled]="annotations.loading()">Submit</button> } @if (owns(annotation) && annotation.annotation_state === 'returned') { <button mat-flat-button color="primary" type="button" (click)="annotations.transition(annotation, 'draft')" [disabled]="annotations.loading()">Resume draft</button> } @if (canManage() && annotation.annotation_state === 'submitted') { <button mat-stroked-button type="button" (click)="annotations.transition(annotation, 'returned', 'Needs correction against the published schema.')" [disabled]="annotations.loading()">Return</button><button mat-flat-button color="primary" type="button" (click)="annotations.transition(annotation, 'locked')" [disabled]="annotations.loading()">Lock</button> } @if (canReplace(annotation)) { <button mat-flat-button color="primary" type="button" (click)="openReplace(annotation)" [disabled]="annotations.loading()"><lucide-icon name="git-branch" [size]="15" />Start replacement</button> }</div></section>
         }
       </div>
       <section class="compare-panel">
         <header><div><span>Side-by-side review</span><h2>{{ comparisonKey() }}</h2></div><small>No source text exposed</small></header>
-        <div class="compare-selectors"><mat-form-field appearance="outline"><mat-label>Left result</mat-label><mat-select [value]="left()?.id" (selectionChange)="leftId.set($event.value)">@for (annotation of annotations.items(); track annotation.id) { <mat-option [value]="annotation.id">#{{ annotation.id }} / {{ annotation.annotator }}</mat-option> }</mat-select></mat-form-field><mat-form-field appearance="outline"><mat-label>Right result</mat-label><mat-select [value]="right()?.id" (selectionChange)="rightId.set($event.value)">@for (annotation of annotations.items(); track annotation.id) { <mat-option [value]="annotation.id">#{{ annotation.id }} / {{ annotation.annotator }}</mat-option> }</mat-select></mat-form-field></div>
+        <div class="compare-selectors"><mat-form-field appearance="outline"><mat-label>Left result</mat-label><mat-select [value]="left()?.id" (selectionChange)="leftId.set($event.value)">@for (annotation of currentAnnotations(); track annotation.id) { <mat-option [value]="annotation.id">#{{ annotation.id }} / {{ annotation.annotator }}</mat-option> }</mat-select></mat-form-field><mat-form-field appearance="outline"><mat-label>Right result</mat-label><mat-select [value]="right()?.id" (selectionChange)="rightId.set($event.value)">@for (annotation of currentAnnotations(); track annotation.id) { <mat-option [value]="annotation.id">#{{ annotation.id }} / {{ annotation.annotator }}</mat-option> }</mat-select></mat-form-field></div>
+        @if (chainVisible()) {
+          <section class="version-chain">
+            <header><span><lucide-icon name="git-branch" [size]="14" />Version chain</span><small>{{ chainAnnotator() }} / {{ chainVisible()?.item_key }}</small></header>
+            <ol>
+              @for (revision of chainVisible()?.version_chain ?? []; track revision.id) {
+                <li [class.current]="revision.id === chainVisible()?.id">
+                  <button type="button" (click)="jumpToRevision(revision.id)"><strong>#{{ revision.id }}</strong><app-annotation-state-badge [state]="revision.annotation_state" /></button>
+                  <span class="chain-meta">{{ revision.created_at | date:'short' }}@if (revision.supersedes_id) { · replaces #{{ revision.supersedes_id }} }</span>
+                  @if (revision.replace_reason) { <em class="chain-reason">“{{ revision.replace_reason }}”</em> }
+                </li>
+              }
+            </ol>
+          </section>
+        }
         <div class="label-columns">
           <article><header><strong>{{ left()?.annotator ?? 'Left result' }}</strong>@if (left(); as item) { <app-annotation-state-badge [state]="item.annotation_state" /> }</header>@for (label of left()?.labels ?? []; track $index) { <div><span>{{ label.unit_key }}</span><strong>{{ label.label }}</strong><code>{{ interval(label) }}</code></div> } @empty { <p>No labels selected</p> }</article>
           <article><header><strong>{{ right()?.annotator ?? 'Right result' }}</strong>@if (right(); as item) { <app-annotation-state-badge [state]="item.annotation_state" /> }</header>@for (label of right()?.labels ?? []; track $index) { <div><span>{{ label.unit_key }}</span><strong>{{ label.label }}</strong><code>{{ interval(label) }}</code></div> } @empty { <p>No labels selected</p> }</article>
@@ -49,6 +63,16 @@ import { AnnotationLabel, AnnotationSet } from '../types/annotation-set';
         <app-diff-evidence-drawer [evidence]="evidence()" />
       </section>
     </section>
+    @if (replaceOpen()) {
+      <section class="replace-band">
+        <header><div><span>Trackable replacement</span><h2>Replace result #{{ replacing()?.id }}</h2></div><button mat-icon-button type="button" aria-label="Close replacement" (click)="closeReplace()"><lucide-icon name="x" [size]="18" /></button></header>
+        <p class="replace-note">A new draft is created for the same annotator ({{ replacing()?.annotator }}), dataset and item ({{ replacing()?.item_key }}). This result becomes <strong>superseded</strong>, unfinished adjudications move to <strong>pending recompute</strong>, and accepted history stays view-only. Repeating this action returns the same draft.</p>
+        <form (ngSubmit)="confirmReplace()">
+          <mat-form-field appearance="outline" class="wide"><mat-label>Replacement reason (min 8 characters)</mat-label><textarea matInput rows="3" [(ngModel)]="replaceReason" name="replaceReason" required minlength="8" maxlength="300"></textarea></mat-form-field>
+          <div class="form-actions"><button mat-button type="button" (click)="closeReplace()">Cancel</button><button mat-flat-button color="primary" type="submit" [disabled]="annotations.loading() || replaceReason.trim().length < 8"><lucide-icon name="git-branch" [size]="16" />Create replacement draft</button></div>
+        </form>
+      </section>
+    }
     @if (editorOpen()) {
       <section class="editor-band">
         <header><div><span>{{ editing() ? 'Draft revision' : 'New result set' }}</span><h2>{{ editing()?.item_key ?? 'Annotation payload' }}</h2></div><button mat-icon-button type="button" aria-label="Close editor" (click)="closeEditor()"><lucide-icon name="x" [size]="18" /></button></header>
@@ -66,6 +90,7 @@ import { AnnotationLabel, AnnotationSet } from '../types/annotation-set';
   `,
   styles: [`
     .filter-band{display:grid;grid-template-columns:minmax(190px,.7fr) minmax(220px,1fr) auto;gap:10px;align-items:start;margin-bottom:16px;padding:11px;background:#e7ecea;border:1px solid #c3cdca;border-radius:4px}.filter-band button{height:40px;display:flex;gap:6px}.annotation-layout{display:grid;grid-template-columns:minmax(330px,.62fr) minmax(570px,1.38fr);gap:16px;align-items:start}.register,.compare-panel,.editor-band{background:#fbfcfa;border:1px solid #c1cbc8;border-radius:4px;overflow:hidden}.register>header{display:flex;justify-content:space-between;padding:11px 13px;background:#e7ecea;border-bottom:1px solid #c8d1ce}.register header span{font-size:11px;font-weight:750;text-transform:uppercase}.register header small{font-size:10px}.annotation-row{width:100%;display:grid;grid-template-columns:minmax(0,1fr) 30px auto;align-items:center;gap:9px;padding:11px;background:#fbfcfa;border:0;border-bottom:1px solid #dce2e0;text-align:left;cursor:pointer}.annotation-row:hover,.annotation-row.selected{background:#fff4cf}.annotation-row>span:first-child{display:grid;gap:3px;min-width:0}.annotation-row strong{font-size:11px}.annotation-row small{overflow:hidden;color:#6a767a;font-size:9px;text-overflow:ellipsis;white-space:nowrap}.label-count{height:27px;display:grid;place-items:center;color:#eef2f0;background:#435157;border-radius:3px;font-size:10px;font-weight:750}.selected-actions{display:grid;gap:8px;padding:11px;background:#eef2f0}.selected-actions>span{font-size:9px;text-transform:uppercase}.selected-actions>div{display:flex;gap:7px;flex-wrap:wrap}.compare-panel>header,.editor-band>header{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:14px 15px;border-bottom:1px solid #cbd3d0}.compare-panel header span,.editor-band header span{color:#69767a;font-size:9px;text-transform:uppercase}.compare-panel h2,.editor-band h2{margin:3px 0 0;font-size:17px}.compare-panel>header>small{color:#34624d;font-size:9px;text-transform:uppercase}.compare-selectors{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;padding:12px 14px 0}.label-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;margin:0 14px 14px;background:#cbd3d0;border:1px solid #cbd3d0}.label-columns>article{min-width:0;background:#f3f6f4}.label-columns article>header{display:flex;align-items:center;justify-content:space-between;gap:7px;padding:9px;background:#e4eae7}.label-columns article>header strong{font-size:10px}.label-columns article>div{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;padding:8px 9px;border-top:1px solid #d9dfdd;font-size:10px}.label-columns article>div span{overflow:hidden;text-overflow:ellipsis}.label-columns article>div strong{color:#6d4f0c}.label-columns code{font-size:9px}.label-columns p{margin:0;padding:18px;color:#6b777b;font-size:10px;text-align:center}.compare-panel app-diff-evidence-drawer{display:block;margin:14px}.editor-band{margin-top:16px}.editor-band form{display:grid;grid-template-columns:repeat(3,1fr);gap:4px 12px;padding:16px}.editor-band .wide,.form-actions{grid-column:1/-1}.form-actions{display:flex;justify-content:flex-end;gap:8px}
+    .version-chain{margin:12px 14px 0;border:1px solid #d3dbd8;border-left:3px solid #8a6d1f;background:#f8f6ec}.version-chain>header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 11px;background:#efe9d6;border-bottom:1px solid #ded5b8}.version-chain header span{display:inline-flex;align-items:center;gap:6px;font-size:10px;font-weight:750;text-transform:uppercase;color:#6a5a26}.version-chain header small{font-size:9px;color:#7a6f45}.version-chain ol{list-style:none;margin:0;padding:6px 11px;display:grid;gap:6px}.version-chain li{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;align-items:center;padding:5px 0;border-top:1px dashed #e0dac4}.version-chain li:first-child{border-top:0}.version-chain li.current{background:#fff4cf;border-radius:3px}.version-chain li button{grid-row:1/span 2;display:inline-flex;align-items:center;gap:7px;padding:2px 4px;background:none;border:0;cursor:pointer;text-align:left}.version-chain li button strong{font-size:10px}.chain-meta{font-size:9px;color:#6b777b}.chain-reason{font-size:10px;font-style:italic;color:#7a5d10}.replace-band{margin-top:16px;background:#fbfcfa;border:1px solid #c1cbc8;border-left:3px solid #8a6d1f;border-radius:4px;overflow:hidden}.replace-band>header{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:14px 15px;border-bottom:1px solid #cbd3d0;background:#f3efdf}.replace-band header span{color:#6a5a26;font-size:9px;text-transform:uppercase}.replace-band h2{margin:3px 0 0;font-size:17px}.replace-note{margin:12px 15px 4px;padding:10px 12px;background:#eef2f0;border:1px solid #d3dad8;font-size:11px;line-height:1.55;color:#44525a}.replace-band form{display:grid;grid-template-columns:1fr;gap:4px 12px;padding:12px 15px 16px}.replace-band .form-actions{display:flex;justify-content:flex-end;gap:8px}.replace-band button[type=submit]{display:flex;gap:6px}
     @media(max-width:1100px){.annotation-layout{grid-template-columns:1fr}}@media(max-width:700px){.filter-band,.compare-selectors,.label-columns,.editor-band form{grid-template-columns:1fr}.editor-band .wide,.form-actions{grid-column:1}.annotation-row{grid-template-columns:minmax(0,1fr) 28px}.annotation-row app-annotation-state-badge{grid-column:1/-1}.label-columns{gap:12px;background:transparent;border:0}.label-columns>article{border:1px solid #cbd3d0}}
   `],
 })
@@ -80,14 +105,25 @@ export class AnnotationsPage implements OnInit {
   readonly editorOpen = signal(false);
   readonly editing = signal<AnnotationSet | null>(null);
   readonly editorError = signal('');
+  readonly replaceOpen = signal(false);
+  readonly replacing = signal<AnnotationSet | null>(null);
+  replaceReason = '';
   datasetFilter: number | null = null;
   itemFilter = 'DOC-7F2A';
   readonly frozenDatasets = computed(() => this.datasets.items().filter((dataset) => dataset.dataset_state === 'frozen'));
   readonly publishedSchemas = computed(() => this.schemas.items().filter((schema) => schema.schema_state === 'published' && (!this.form.controls.dataset_id.value || schema.dataset_id === this.form.controls.dataset_id.value)));
-  readonly left = computed<AnnotationSet | null>(() => this.annotations.items().find((item) => item.id === this.leftId()) ?? this.annotations.items()[0] ?? null);
-  readonly right = computed<AnnotationSet | null>(() => this.annotations.items().find((item) => item.id === this.rightId()) ?? this.annotations.items().find((item) => item.id !== this.left()?.id) ?? null);
+  readonly currentAnnotations = computed(() => this.annotations.items().filter((item) => item.annotation_state !== 'superseded'));
+  readonly left = computed<AnnotationSet | null>(() => this.annotations.items().find((item) => item.id === this.leftId()) ?? this.currentAnnotations()[0] ?? null);
+  readonly right = computed<AnnotationSet | null>(() => this.annotations.items().find((item) => item.id === this.rightId()) ?? this.currentAnnotations().find((item) => item.id !== this.left()?.id) ?? null);
   readonly comparisonKey = computed(() => this.left()?.item_key ?? this.right()?.item_key ?? 'Select two result sets');
   readonly evidence = computed(() => compareLabels(this.left()?.labels ?? [], this.right()?.labels ?? []));
+  readonly chainVisible = computed<AnnotationSet | null>(() => {
+    const selected = this.annotations.selected();
+    if (!selected?.version_chain?.length) return null;
+    const lineage = selected.version_chain.some((revision) => revision.supersedes_id || revision.replace_reason);
+    return lineage ? selected : null;
+  });
+  readonly chainAnnotator = computed(() => this.chainVisible()?.annotator ?? '');
   readonly form = this.fb.nonNullable.group({
     dataset_id: [0, [Validators.required, Validators.min(1)]], schema_id: [0, [Validators.required, Validators.min(1)]], item_key: ['DOC-QA-01', [Validators.required, Validators.minLength(2)]],
     source_checksum: ['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', [Validators.required, Validators.minLength(64), Validators.maxLength(64)]],
@@ -98,6 +134,10 @@ export class AnnotationsPage implements OnInit {
   canManage = () => this.auth.can('data_manager', 'adjudicator', 'admin');
   owns(annotation: AnnotationSet): boolean { return annotation.annotator_id === this.auth.user()?.id; }
   canEdit(annotation: AnnotationSet): boolean { return annotation.annotation_state === 'draft' && annotation.annotator_id === this.auth.user()?.id; }
+  canReplace(annotation: AnnotationSet): boolean {
+    return (annotation.annotation_state === 'locked' || annotation.annotation_state === 'compared')
+      && (this.owns(annotation) || this.auth.can('admin'));
+  }
   ngOnInit(): void { this.datasets.load(); this.schemas.load(); this.annotations.load(undefined, this.itemFilter); }
   reload(): void { this.datasets.load(); this.schemas.load(this.datasetFilter ?? undefined); this.annotations.load(this.datasetFilter ?? undefined, this.itemFilter); }
   applyFilters(): void { this.schemas.load(this.datasetFilter ?? undefined); this.annotations.load(this.datasetFilter ?? undefined, this.itemFilter.trim()); this.leftId.set(0); this.rightId.set(0); }
@@ -115,6 +155,22 @@ export class AnnotationsPage implements OnInit {
     this.form.controls.dataset_id.disable(); this.form.controls.schema_id.disable(); this.form.controls.item_key.disable(); this.form.controls.source_checksum.disable(); this.editorOpen.set(true);
   }
   closeEditor(): void { this.editorOpen.set(false); this.editing.set(null); this.editorError.set(''); this.form.enable(); }
+  openReplace(annotation: AnnotationSet): void {
+    this.replacing.set(annotation);
+    const prefill = annotation.quality_note ? `Correction: ${annotation.quality_note}` : '';
+    this.replaceReason = prefill.length <= 300 ? prefill : '';
+    this.replaceOpen.set(true);
+  }
+  closeReplace(): void { this.replaceOpen.set(false); this.replacing.set(null); this.replaceReason = ''; }
+  confirmReplace(): void {
+    const target = this.replacing();
+    if (!target || this.replaceReason.trim().length < 8) return;
+    this.annotations.replace(target, this.replaceReason.trim(), () => this.closeReplace());
+  }
+  jumpToRevision(revisionId: number): void {
+    const target = this.annotations.items().find((item) => item.id === revisionId);
+    if (target) this.annotations.choose(target);
+  }
   save(): void {
     if (this.form.invalid) return;
     const value = this.form.getRawValue();

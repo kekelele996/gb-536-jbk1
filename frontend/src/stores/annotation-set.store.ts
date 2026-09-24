@@ -14,7 +14,12 @@ export class AnnotationSetStore {
   readonly loading = signal(false);
   readonly error = signal('');
 
+  private lastDatasetId: number | undefined;
+  private lastItemKey: string | undefined;
+
   load(datasetId?: number, itemKey?: string): void {
+    this.lastDatasetId = datasetId;
+    this.lastItemKey = itemKey;
     this.loading.set(true);
     this.error.set('');
     this.api.list(datasetId, itemKey).pipe(finalize(() => this.loading.set(false))).subscribe({
@@ -29,6 +34,14 @@ export class AnnotationSetStore {
 
   choose(annotation: AnnotationSet): void {
     this.selected.set(annotation);
+    // The list projection does not embed the version chain; hydrate it from
+    // the detail endpoint so the selected record can render its lineage.
+    if (!annotation.version_chain?.length) {
+      this.api.get(annotation.id).subscribe({
+        next: ({ data }) => this.merge(data),
+        error: () => undefined,
+      });
+    }
   }
 
   create(payload: CreateAnnotationSet, done?: () => void): void {
@@ -39,17 +52,44 @@ export class AnnotationSetStore {
     this.mutate(this.api.update(id, payload), done);
   }
 
-  transition(annotation: AnnotationSet, target: AnnotationState, reason = ''): void {
-    this.mutate(this.api.transition(annotation.id, target, reason));
+  replace(annotation: AnnotationSet, reason: string, done?: () => void): void {
+    this.mutate(this.api.replace(annotation.id, reason), done, true);
   }
 
-  private mutate(request: Observable<ApiEnvelope<AnnotationSet>>, done?: () => void): void {
+  transition(annotation: AnnotationSet, target: AnnotationState, reason = ''): void {
+    this.mutate(this.api.transition(annotation.id, target, reason), undefined, true);
+  }
+
+  private merge(data: AnnotationSet): void {
+    this.items.update((items) => {
+      const without = items.filter((item) => item.id !== data.id);
+      const index = items.findIndex((item) => item.id === data.id);
+      if (index >= 0) {
+        without.splice(index, 0, data);
+        return without;
+      }
+      return [data, ...without];
+    });
+    this.selected.set(data);
+  }
+
+  private mutate(request: Observable<ApiEnvelope<AnnotationSet>>, done?: () => void, reloadList = false): void {
     this.loading.set(true);
     this.error.set('');
     request.pipe(finalize(() => this.loading.set(false))).subscribe({
       next: ({ data }) => {
-        this.items.update((items) => [data, ...items.filter((item) => item.id !== data.id)]);
-        this.selected.set(data);
+        this.merge(data);
+        // A replacement retires old rows and changes adjudication state;
+        // refresh the register so stale versions disappear from actions.
+        if (reloadList) {
+          this.api.list(this.lastDatasetId, this.lastItemKey ?? data.item_key).subscribe({
+            next: ({ data: items }) => {
+              this.items.set(items);
+              this.selected.set(items.find((item) => item.id === data.id) ?? data);
+            },
+            error: () => undefined,
+          });
+        }
         done?.();
       },
       error: (error) => this.error.set(apiErrorMessage(error)),
