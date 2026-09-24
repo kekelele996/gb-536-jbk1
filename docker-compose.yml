@@ -1,0 +1,70 @@
+name: corpus-annotation-agreement-control
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-corpus-annotation-agreement-control}-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-corpus_agreement}
+      POSTGRES_USER: ${POSTGRES_USER:-corpus_agreement}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-corpus_agreement_local_536}
+    ports:
+      - "${DB_PORT:-57536}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-corpus_agreement} -d ${POSTGRES_DB:-corpus_agreement}"]
+      interval: 5s
+      timeout: 4s
+      retries: 15
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+    container_name: ${COMPOSE_PROJECT_NAME:-corpus-annotation-agreement-control}-backend
+    environment:
+      PORT: "8080"
+      DB_DRIVER: postgres
+      DB_DSN: ${DB_DSN:-host=db user=corpus_agreement password=corpus_agreement_local_536 dbname=corpus_agreement port=5432 sslmode=disable TimeZone=UTC}
+      DB_AUTO_MIGRATE: ${DB_AUTO_MIGRATE:-true}
+      JWT_SECRET: ${JWT_SECRET:-local-corpus-agreement-secret-536-change-production}
+      JWT_TTL_MINUTES: ${JWT_TTL_MINUTES:-480}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:18536}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-300}
+      ALGORITHM_VERSION: ${ALGORITHM_VERSION:-agreement-nominal-span-v1.0}
+    ports:
+      - "${BACKEND_PORT:-19536}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 4s
+      retries: 15
+      start_period: 5s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: ${COMPOSE_PROJECT_NAME:-corpus-annotation-agreement-control}-frontend
+    ports:
+      - "${FRONTEND_PORT:-18536}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/api/healthz"]
+      interval: 5s
+      timeout: 4s
+      retries: 15
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    name: ${COMPOSE_PROJECT_NAME:-corpus-annotation-agreement-control}-postgres-data
